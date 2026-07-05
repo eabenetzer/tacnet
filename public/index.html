@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="description" content="TacNet — Free tactical awareness app with live map, push-to-talk, camera sharing, and team chat" />
+  <title>TacNet — Tactical Awareness</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <!-- Google Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- ═══════════════ LOBBY SCREEN ═══════════════ -->
+  <div id="lobby" class="screen active">
+    <div class="lobby-container">
+      <div class="lobby-logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="32" cy="32" r="28" stroke="currentColor" stroke-width="2" opacity="0.3"/>
+            <circle cx="32" cy="32" r="18" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+            <circle cx="32" cy="32" r="8" stroke="currentColor" stroke-width="2.5"/>
+            <line x1="32" y1="2" x2="32" y2="18" stroke="currentColor" stroke-width="2"/>
+            <line x1="32" y1="46" x2="32" y2="62" stroke="currentColor" stroke-width="2"/>
+            <line x1="2" y1="32" x2="18" y2="32" stroke="currentColor" stroke-width="2"/>
+            <line x1="46" y1="32" x2="62" y2="32" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </div>
+        <h1>TacNet</h1>
+        <p class="lobby-subtitle">Tactical Awareness Network</p>
+      </div>
+
+      <div class="lobby-form">
+        <div class="input-group">
+          <label for="callsign-input">CALLSIGN</label>
+          <input type="text" id="callsign-input" placeholder="Enter your callsign" maxlength="20" autocomplete="off" />
+        </div>
+        <div class="input-group">
+          <label for="room-input">ROOM CODE</label>
+          <input type="text" id="room-input" placeholder="4321" value="4321" maxlength="20" autocomplete="off" />
+        </div>
+        <button id="join-btn" class="btn-primary">
+          <span>JOIN NETWORK</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+
+      <div class="lobby-footer">
+        <p>Share the room code with your team to connect</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ MAIN TACTICAL SCREEN ═══════════════ -->
+  <div id="tactical" class="screen">
+
+    <!-- Header Bar -->
+    <header id="header">
+      <div class="header-left">
+        <div class="status-dot pulse"></div>
+        <span class="brand">TacNet</span>
+      </div>
+      <div class="header-center">
+        <span id="room-label" class="room-badge">ROOM: 4321</span>
+        <span id="member-count" class="member-badge">0 online</span>
+      </div>
+      <div class="header-right">
+        <button id="center-map-btn" class="icon-btn" title="Center on me">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Map Container -->
+    <div id="map"></div>
+
+    <!-- PTT Indicator (who's talking) -->
+    <div id="ptt-indicator" class="hidden">
+      <div class="ptt-indicator-dot"></div>
+      <span id="ptt-indicator-name">—</span>
+    </div>
+
+    <!-- Camera Feeds Panel -->
+    <div id="camera-panel" class="panel hidden">
+      <div class="panel-header">
+        <h3>📷 Camera Feeds</h3>
+        <button class="panel-close" data-panel="camera-panel">✕</button>
+      </div>
+      <div id="camera-feeds" class="camera-grid">
+        <!-- Video elements added dynamically -->
+      </div>
+    </div>
+
+    <!-- Chat Panel -->
+    <div id="chat-panel" class="panel hidden">
+      <div class="panel-header">
+        <h3>💬 Chat</h3>
+        <button class="panel-close" data-panel="chat-panel">✕</button>
+      </div>
+      <div id="chat-messages" class="chat-messages">
+        <!-- Messages added dynamically -->
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="chat-input" placeholder="Type a message..." maxlength="500" autocomplete="off" />
+        <button id="chat-send-btn" class="icon-btn send-btn">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Team Roster Panel -->
+    <div id="roster-panel" class="panel hidden">
+      <div class="panel-header">
+        <h3>👥 Team</h3>
+        <button class="panel-close" data-panel="roster-panel">✕</button>
+      </div>
+      <div id="roster-list" class="roster-list">
+        <!-- Roster items added dynamically -->
+      </div>
+    </div>
+
+    <!-- Bottom Toolbar -->
+    <nav id="toolbar">
+      <button id="btn-roster" class="toolbar-btn" data-panel="roster-panel" title="Team">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+        <span>Team</span>
+      </button>
+      <button id="btn-chat" class="toolbar-btn" data-panel="chat-panel" title="Chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <span>Chat</span>
+        <span id="chat-badge" class="badge hidden">0</span>
+      </button>
+
+      <!-- PTT Button (center, large) -->
+      <button id="ptt-btn" class="ptt-button" title="Push to Talk">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        <span>PTT</span>
+      </button>
+
+      <button id="btn-camera" class="toolbar-btn" data-panel="camera-panel" title="Camera">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        <span>Cam</span>
+      </button>
+      <button id="btn-my-cam" class="toolbar-btn" title="My Camera">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8" opacity="0.3"/><line x1="3.95" y1="6.06" x2="8.54" y2="14" opacity="0.3"/><line x1="10.88" y1="21.94" x2="15.46" y2="14" opacity="0.3"/></svg>
+        <span>My Cam</span>
+      </button>
+    </nav>
+
+    <!-- Local camera preview -->
+    <div id="local-video-container" class="hidden">
+      <video id="local-video" autoplay muted playsinline></video>
+      <span class="local-video-label">YOU</span>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════ SCRIPTS ═══════════════ -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="js/webrtc.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/location.js"></script>
+  <script src="js/chat.js"></script>
+  <script src="js/ptt.js"></script>
+  <script src="js/camera.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
