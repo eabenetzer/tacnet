@@ -147,7 +147,12 @@ window.WebRTCManager = (function () {
   async function startVideo() {
     try {
       localVideoStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+        video: { 
+          facingMode: 'environment', 
+          width: { ideal: 320 }, 
+          height: { ideal: 240 },
+          frameRate: { ideal: 15, max: 15 }
+        }
       });
       // Add video track to all existing peers
       for (const [peerId, pc] of peers) {

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TacNet</string>
+    <string name="title_activity_main">TacNet</string>
+    <string name="package_name">com.eabenetzer.tacnet</string>
+    <string name="custom_url_scheme">com.eabenetzer.tacnet</string>
+</resources>

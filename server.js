@@ -13,17 +13,28 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Room & User State ──────────────────────────────────────────
-const rooms = new Map();   // roomCode -> Map<socketId, userObj>
+const ENTRY_PASS = '4321';
 
-function broadcastRoster(roomCode) {
-  const members = rooms.get(roomCode);
-  if (!members) return;
-  const roster = [];
-  for (const [id, u] of members) {
-    roster.push({ id, callsign: u.callsign, lat: u.lat, lng: u.lng, color: u.color });
+function generatePairingCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for(let i=0; i<4; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+  return code;
+}
+
+// ── Room & User State ──────────────────────────────────────────
+// In the new privacy model, all users are in the same 'server' if they have the entry pass,
+// but they only exchange data with their 'paired' teammates.
+const users = new Map(); // socketId -> userObj
+const pairingToSocket = new Map(); // pairingCode -> socketId
+
+// Helper to send to paired peers
+function emitToPaired(socketId, event, data, ioInstance, socketInstance) {
+  const me = users.get(socketId);
+  if (!me) return;
+  for (const peerId of me.pairedWith) {
+    socketInstance.to(peerId).emit(event, data);
   }
-  io.to(roomCode).emit('roster', roster);
 }
 
 const MARKER_COLORS = [
@@ -34,126 +45,178 @@ const MARKER_COLORS = [
 
 // ── Socket.IO ──────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  let currentRoom = null;
   let currentUser = null;
 
-  // ── Join Room ────────────────────────────────────────────────
+  // ── Join Server ────────────────────────────────────────────────
   socket.on('join-room', ({ roomCode, callsign }) => {
-    roomCode = (roomCode || '4321').toUpperCase().trim();
+    roomCode = (roomCode || '').trim();
+    if (roomCode !== ENTRY_PASS) {
+      socket.emit('auth-error', 'Invalid Entry Pass');
+      return;
+    }
+    
     callsign = (callsign || 'Operator').trim().substring(0, 20);
+    const color = MARKER_COLORS[users.size % MARKER_COLORS.length];
+    
+    // Ensure unique pairing code
+    let pairingCode = generatePairingCode();
+    while(pairingToSocket.has(pairingCode)) pairingCode = generatePairingCode();
 
-    if (!rooms.has(roomCode)) rooms.set(roomCode, new Map());
-    const members = rooms.get(roomCode);
+    currentUser = { 
+      id: socket.id,
+      callsign, 
+      lat: null, lng: null, 
+      color,
+      pairingCode,
+      pairedWith: new Set()
+    };
+    
+    users.set(socket.id, currentUser);
+    pairingToSocket.set(pairingCode, socket.id);
 
-    const color = MARKER_COLORS[members.size % MARKER_COLORS.length];
-    currentUser = { callsign, lat: null, lng: null, color };
-    currentRoom = roomCode;
-
-    members.set(socket.id, currentUser);
-    socket.join(roomCode);
-
-    socket.emit('joined', { roomCode, callsign, color, userId: socket.id });
-    broadcastRoster(roomCode);
-
-    // Notify others
-    socket.to(roomCode).emit('chat-message', {
-      from: 'SYSTEM',
-      text: `${callsign} joined the room`,
-      time: Date.now(),
-      color: '#888'
+    socket.emit('joined', { 
+      callsign, 
+      color, 
+      userId: socket.id,
+      pairingCode 
     });
+  });
+
+  // ── Add Teammate ─────────────────────────────────────────────
+  socket.on('add-teammate', (code) => {
+    if (!currentUser) return;
+    const targetCode = (code || '').toUpperCase().trim();
+    if (targetCode === currentUser.pairingCode) return;
+    
+    const targetSocketId = pairingToSocket.get(targetCode);
+    if (targetSocketId) {
+      const targetUser = users.get(targetSocketId);
+      if (targetUser) {
+        // Mutual pair
+        currentUser.pairedWith.add(targetSocketId);
+        targetUser.pairedWith.add(socket.id);
+        
+        // Notify both
+        socket.emit('teammate-added', {
+          id: targetSocketId, callsign: targetUser.callsign, color: targetUser.color, lat: targetUser.lat, lng: targetUser.lng
+        });
+        socket.to(targetSocketId).emit('teammate-added', {
+          id: socket.id, callsign: currentUser.callsign, color: currentUser.color, lat: currentUser.lat, lng: currentUser.lng
+        });
+        
+        // System chat notification
+        socket.emit('chat-message', { from: 'SYSTEM', text: `Paired with ${targetUser.callsign}`, time: Date.now(), color: '#888' });
+        socket.to(targetSocketId).emit('chat-message', { from: 'SYSTEM', text: `${currentUser.callsign} paired with you`, time: Date.now(), color: '#888' });
+      }
+    } else {
+      socket.emit('chat-message', { from: 'SYSTEM', text: `Invalid code: ${targetCode}`, time: Date.now(), color: '#ff5252' });
+    }
   });
 
   // ── Location Update ──────────────────────────────────────────
   socket.on('location', ({ lat, lng, heading, speed }) => {
-    if (!currentRoom || !currentUser) return;
+    if (!currentUser) return;
     currentUser.lat = lat;
     currentUser.lng = lng;
     currentUser.heading = heading;
     currentUser.speed = speed;
-    socket.to(currentRoom).emit('location-update', {
+    
+    emitToPaired(socket.id, 'location-update', {
       id: socket.id,
       lat, lng, heading, speed,
       callsign: currentUser.callsign,
       color: currentUser.color
-    });
+    }, io, socket);
   });
 
   // ── Chat ─────────────────────────────────────────────────────
   socket.on('chat-message', ({ text }) => {
-    if (!currentRoom || !currentUser) return;
+    if (!currentUser) return;
     const msg = {
       from: currentUser.callsign,
       text: text.substring(0, 500),
       time: Date.now(),
       color: currentUser.color
     };
-    io.to(currentRoom).emit('chat-message', msg);
+    // Send to self
+    socket.emit('chat-message', msg);
+    // Send to paired
+    emitToPaired(socket.id, 'chat-message', msg, io, socket);
   });
 
   // ── WebRTC Signaling ─────────────────────────────────────────
+  // Signaling needs to be passed through even if not fully paired yet? 
+  // No, only paired users should do WebRTC.
   socket.on('rtc-offer', ({ to, offer }) => {
-    socket.to(to).emit('rtc-offer', { from: socket.id, offer });
+    if(currentUser && currentUser.pairedWith.has(to)) {
+      socket.to(to).emit('rtc-offer', { from: socket.id, offer });
+    }
   });
 
   socket.on('rtc-answer', ({ to, answer }) => {
-    socket.to(to).emit('rtc-answer', { from: socket.id, answer });
+    if(currentUser && currentUser.pairedWith.has(to)) {
+      socket.to(to).emit('rtc-answer', { from: socket.id, answer });
+    }
   });
 
   socket.on('rtc-ice', ({ to, candidate }) => {
-    socket.to(to).emit('rtc-ice', { from: socket.id, candidate });
+    if(currentUser && currentUser.pairedWith.has(to)) {
+      socket.to(to).emit('rtc-ice', { from: socket.id, candidate });
+    }
   });
 
   // ── PTT State ────────────────────────────────────────────────
   socket.on('ptt-start', () => {
-    if (!currentRoom || !currentUser) return;
-    socket.to(currentRoom).emit('ptt-active', {
+    if (!currentUser) return;
+    emitToPaired(socket.id, 'ptt-active', {
       id: socket.id,
       callsign: currentUser.callsign,
       color: currentUser.color
-    });
+    }, io, socket);
   });
 
   socket.on('ptt-stop', () => {
-    if (!currentRoom || !currentUser) return;
-    socket.to(currentRoom).emit('ptt-inactive', { id: socket.id });
+    if (!currentUser) return;
+    emitToPaired(socket.id, 'ptt-inactive', { id: socket.id }, io, socket);
   });
 
   // ── Camera State ─────────────────────────────────────────────
   socket.on('camera-on', () => {
-    if (!currentRoom) return;
-    socket.to(currentRoom).emit('camera-on', {
+    if (!currentUser) return;
+    emitToPaired(socket.id, 'camera-on', {
       id: socket.id,
       callsign: currentUser.callsign
-    });
+    }, io, socket);
   });
 
   socket.on('camera-off', () => {
-    if (!currentRoom) return;
-    socket.to(currentRoom).emit('camera-off', { id: socket.id });
+    if (!currentUser) return;
+    emitToPaired(socket.id, 'camera-off', { id: socket.id }, io, socket);
   });
 
   // ── Disconnect ───────────────────────────────────────────────
   socket.on('disconnect', () => {
-    if (!currentRoom) return;
-    const members = rooms.get(currentRoom);
-    if (members) {
-      members.delete(socket.id);
-      if (members.size === 0) {
-        rooms.delete(currentRoom);
-      } else {
-        broadcastRoster(currentRoom);
-        io.to(currentRoom).emit('chat-message', {
+    if (!currentUser) return;
+    
+    // Remove from other people's paired sets
+    for (const peerId of currentUser.pairedWith) {
+      const peer = users.get(peerId);
+      if (peer) {
+        peer.pairedWith.delete(socket.id);
+        io.to(peerId).emit('chat-message', {
           from: 'SYSTEM',
-          text: `${currentUser?.callsign || 'Unknown'} left the room`,
+          text: `${currentUser.callsign} went offline`,
           time: Date.now(),
           color: '#888'
         });
-        io.to(currentRoom).emit('peer-disconnected', { id: socket.id });
+        io.to(peerId).emit('peer-disconnected', { id: socket.id });
       }
     }
+    
+    pairingToSocket.delete(currentUser.pairingCode);
+    users.delete(socket.id);
   });
-});
+
 
 // ── Start ──────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;

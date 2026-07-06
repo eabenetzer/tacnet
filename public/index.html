@@ -42,7 +42,7 @@
           <input type="text" id="callsign-input" placeholder="Enter your callsign" maxlength="20" autocomplete="off" />
         </div>
         <div class="input-group">
-          <label for="room-input">ROOM CODE</label>
+          <label for="room-input">SERVER ENTRY PASS</label>
           <input type="text" id="room-input" placeholder="4321" value="4321" maxlength="20" autocomplete="off" />
         </div>
         <button id="join-btn" class="btn-primary">
@@ -67,10 +67,13 @@
         <span class="brand">TacNet</span>
       </div>
       <div class="header-center">
-        <span id="room-label" class="room-badge">ROOM: 4321</span>
-        <span id="member-count" class="member-badge">0 online</span>
+        <span id="room-label" class="room-badge">MY CODE: ----</span>
+        <span id="member-count" class="member-badge">0 paired</span>
       </div>
-      <div class="header-right">
+      <div class="header-right" style="display: flex; gap: 4px;">
+        <button id="boost-btn" class="icon-btn" title="Boost Mode (High GPS Accuracy)" style="color: var(--text-muted);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+        </button>
         <button id="center-map-btn" class="icon-btn" title="Center on me">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
         </button>
@@ -117,8 +120,12 @@
     <!-- Team Roster Panel -->
     <div id="roster-panel" class="panel hidden">
       <div class="panel-header">
-        <h3>👥 Team</h3>
+        <h3>👥 Paired Team</h3>
         <button class="panel-close" data-panel="roster-panel">✕</button>
+      </div>
+      <div class="add-teammate-row" style="display: flex; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border-light);">
+        <input type="text" id="teammate-code-input" placeholder="Teammate Code" maxlength="4" style="flex: 1; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text); font-family: var(--font-mono); text-transform: uppercase;" autocomplete="off" />
+        <button id="add-teammate-btn" class="btn-primary" style="padding: 8px 16px; font-size: 0.75rem;">ADD</button>
       </div>
       <div id="roster-list" class="roster-list">
         <!-- Roster items added dynamically -->

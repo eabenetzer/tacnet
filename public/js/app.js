@@ -12,13 +12,16 @@
   const memberCount = document.getElementById('member-count');
   const centerMapBtn = document.getElementById('center-map-btn');
   const rosterList = document.getElementById('roster-list');
+  const teammateCodeInput = document.getElementById('teammate-code-input');
+  const addTeammateBtn = document.getElementById('add-teammate-btn');
+  const boostBtn = document.getElementById('boost-btn');
 
   let socket = null;
   let myId = null;
   let myCallsign = '';
   let myColor = '';
-  let myRoomCode = '';
-  let roster = [];
+  let myPairingCode = '';
+  let pairedTeammates = new Map(); // id -> userObj
 
   // ── Panel toggle ──────────────────────────────────────────
   const panelBtns = document.querySelectorAll('.toolbar-btn[data-panel]');
@@ -101,9 +104,12 @@
     socket.on('joined', (data) => {
       myId = data.userId;
       myColor = data.color;
-      myRoomCode = data.roomCode;
+      myPairingCode = data.pairingCode;
 
-      roomLabel.textContent = `ROOM: ${data.roomCode}`;
+      roomLabel.textContent = `MY CODE: ${data.pairingCode}`;
+      
+      // I don't start with any roster. Just myself.
+      renderRoster([]);
 
       // Switch screens
       lobbyScreen.classList.remove('active');
@@ -152,30 +158,38 @@
       GeoLocation.start();
     });
 
-    // ── Roster updates ─────────────────────────────────────
-    socket.on('roster', (data) => {
-      roster = data;
-      memberCount.textContent = `${data.length} online`;
-      renderRoster(data);
+    // ── Teammate pairing ─────────────────────────────────────
+    addTeammateBtn.addEventListener('click', () => {
+      const code = teammateCodeInput.value.trim();
+      if (code && code.length === 4) {
+        socket.emit('add-teammate', code);
+        teammateCodeInput.value = '';
+      }
+    });
 
-      // Update map markers for everyone
-      data.forEach(u => {
-        if (u.lat != null && u.lng != null) {
-          TacMap.updateMarker(u.id, {
-            lat: u.lat, lng: u.lng,
-            callsign: u.callsign,
-            color: u.color,
-            isSelf: u.id === myId
-          });
-        }
-      });
+    socket.on('teammate-added', (u) => {
+      pairedTeammates.set(u.id, u);
+      memberCount.textContent = `${pairedTeammates.size} paired`;
+      renderRoster(Array.from(pairedTeammates.values()));
 
-      // Establish WebRTC connections to new peers
-      data.forEach(u => {
-        if (u.id !== myId && !WebRTCManager.getPeers().has(u.id)) {
-          WebRTCManager.connectToPeer(u.id);
-        }
-      });
+      if (u.lat != null && u.lng != null) {
+        TacMap.updateMarker(u.id, {
+          lat: u.lat, lng: u.lng,
+          callsign: u.callsign,
+          color: u.color,
+          isSelf: false
+        });
+      }
+
+      if (!WebRTCManager.getPeers().has(u.id)) {
+        WebRTCManager.connectToPeer(u.id);
+      }
+    });
+
+    // ── Error handling ───────────────────────────────────────
+    socket.on('auth-error', (msg) => {
+      alert(msg);
+      location.reload();
     });
 
     // ── Location from others ───────────────────────────────
@@ -191,6 +205,9 @@
     // ── Peer disconnected ──────────────────────────────────
     socket.on('peer-disconnected', ({ id }) => {
       TacMap.removeMarker(id);
+      pairedTeammates.delete(id);
+      memberCount.textContent = `${pairedTeammates.size} paired`;
+      renderRoster(Array.from(pairedTeammates.values()));
     });
   }
 
@@ -203,6 +220,18 @@
       isSelf: true
     });
   }
+
+  // ── Boost mode toggle ────────────────────────────────────
+  boostBtn.addEventListener('click', () => {
+    const isBoost = GeoLocation.toggleBoost();
+    if (isBoost) {
+      boostBtn.style.color = 'var(--accent)';
+      boostBtn.classList.add('pulse');
+    } else {
+      boostBtn.style.color = 'var(--text-muted)';
+      boostBtn.classList.remove('pulse');
+    }
+  });
 
   // ── Center map on me ─────────────────────────────────────
   centerMapBtn.addEventListener('click', () => {
