@@ -216,7 +216,7 @@ io.on('connection', (socket) => {
     pairingToSocket.delete(currentUser.pairingCode);
     users.delete(socket.id);
   });
-
+});
 
 // ── Start ──────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
