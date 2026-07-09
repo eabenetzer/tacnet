@@ -15,6 +15,16 @@
   const teammateCodeInput = document.getElementById('teammate-code-input');
   const addTeammateBtn = document.getElementById('add-teammate-btn');
   const boostBtn = document.getElementById('boost-btn');
+  const serverUrlInput = document.getElementById('server-url-input');
+  const serverUrlGroup = document.getElementById('server-url-group');
+
+  // Hide server URL input on regular browsers to keep UI clean
+  const isNative = !!window.Capacitor;
+  if (!isNative) {
+    serverUrlGroup.style.display = 'none';
+  } else {
+    serverUrlInput.value = localStorage.getItem('tacnet_server_url') || '';
+  }
 
   let socket = null;
   let myId = null;
@@ -92,10 +102,23 @@
     }
 
     myCallsign = callsign;
-    myRoomCode = roomCode;
 
     // Connect socket
-    socket = io();
+    let serverUrl = '';
+    if (isNative) {
+      serverUrl = serverUrlInput.value.trim();
+      if (!serverUrl) {
+        serverUrlInput.focus();
+        serverUrlInput.style.borderColor = '#ff5252';
+        setTimeout(() => { serverUrlInput.style.borderColor = ''; }, 1500);
+        return;
+      }
+      localStorage.setItem('tacnet_server_url', serverUrl);
+    } else {
+      serverUrl = window.location.origin;
+    }
+
+    socket = io(serverUrl);
 
     socket.on('connect', () => {
       socket.emit('join-room', { roomCode, callsign });
