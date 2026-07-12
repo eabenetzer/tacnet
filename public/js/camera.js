@@ -10,11 +10,16 @@ window.Camera = (function () {
   const myCamBtn = document.getElementById('btn-my-cam');
 
   const remoteVideos = new Map(); // peerId -> video element
+  let facingMode = 'environment'; // track current facing mode
 
   function init(sock) {
     socket = sock;
 
     myCamBtn.addEventListener('click', toggleCamera);
+
+    // Flip camera button
+    const flipBtn = document.getElementById('flip-cam-btn');
+    if (flipBtn) flipBtn.addEventListener('click', flipCamera);
 
     // Remote camera events
     socket.on('camera-on', ({ id, callsign }) => {
@@ -26,6 +31,16 @@ window.Camera = (function () {
     });
   }
 
+  async function flipCamera() {
+    facingMode = facingMode === 'environment' ? 'user' : 'environment';
+    if (cameraOn) {
+      // Restart camera with new facing mode
+      WebRTCManager.stopVideo();
+      cameraOn = false;
+      await startCamera();
+    }
+  }
+
   async function toggleCamera() {
     if (cameraOn) {
       stopCamera();
@@ -35,13 +50,21 @@ window.Camera = (function () {
   }
 
   async function startCamera() {
-    const stream = await WebRTCManager.startVideo();
+    const stream = await WebRTCManager.startVideo(facingMode);
     if (!stream) return;
 
     cameraOn = true;
     myCamBtn.classList.add('active');
     localVideo.srcObject = stream;
     localVideoContainer.classList.remove('hidden');
+
+    // Mirror local preview if using front camera (user-facing)
+    // We only mirror the PREVIEW, not what's sent to peers
+    if (facingMode === 'user') {
+      localVideo.style.transform = 'scaleX(-1)';
+    } else {
+      localVideo.style.transform = '';
+    }
 
     socket.emit('camera-on');
   }

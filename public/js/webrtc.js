@@ -144,11 +144,11 @@ window.WebRTCManager = (function () {
   }
 
   // ── Video (Camera) ───────────────────────────────────────
-  async function startVideo() {
+  async function startVideo(facingMode = 'environment') {
     try {
       localVideoStream = await navigator.mediaDevices.getUserMedia({
         video: { 
-          facingMode: 'environment', 
+          facingMode: facingMode,
           width: { ideal: 320 }, 
           height: { ideal: 240 },
           frameRate: { ideal: 15, max: 15 }

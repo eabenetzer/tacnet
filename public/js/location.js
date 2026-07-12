@@ -11,7 +11,7 @@ window.GeoLocation = (function () {
   let boostMode = false;
   let updateInterval = 15000; // 15 seconds normally
   const BOOST_INTERVAL = 3000; // 3 seconds in boost mode
-  const DISTANCE_THRESHOLD = 75; // meters
+  const DISTANCE_THRESHOLD = 20; // meters — tighter threshold for tactical accuracy
 
   function init(sock, callback) {
     socket = sock;
@@ -67,9 +67,9 @@ window.GeoLocation = (function () {
         console.warn('Geolocation error:', err.message);
       },
       {
-        enableHighAccuracy: boostMode, // Only use high power GPS if boosting
-        maximumAge: updateInterval,
-        timeout: 5000
+        enableHighAccuracy: true, // Always use real GPS chip for tactical accuracy
+        maximumAge: boostMode ? 0 : 10000,
+        timeout: 10000
       }
     );
   }

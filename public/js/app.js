@@ -26,6 +26,27 @@
     serverUrlInput.value = localStorage.getItem('tacnet_server_url') || '';
   }
 
+  // ── Restore saved credentials ──────────────────────────────
+  const savedCallsign = localStorage.getItem('tacnet_callsign');
+  const savedPass = localStorage.getItem('tacnet_entry_pass');
+  if (savedCallsign) callsignInput.value = savedCallsign;
+  if (savedPass) roomInput.value = savedPass;
+
+  // Show "clear saved" button if credentials exist
+  const clearSavedBtn = document.getElementById('clear-saved-btn');
+  if (savedCallsign && clearSavedBtn) {
+    clearSavedBtn.style.display = 'inline-block';
+    clearSavedBtn.addEventListener('click', () => {
+      localStorage.removeItem('tacnet_callsign');
+      localStorage.removeItem('tacnet_entry_pass');
+      localStorage.removeItem('tacnet_server_url');
+      callsignInput.value = '';
+      roomInput.value = '4321';
+      if (isNative) serverUrlInput.value = '';
+      clearSavedBtn.style.display = 'none';
+    });
+  }
+
   let socket = null;
   let myId = null;
   let myCallsign = '';
@@ -102,6 +123,10 @@
     }
 
     myCallsign = callsign;
+
+    // Save credentials for next time
+    localStorage.setItem('tacnet_callsign', callsign);
+    localStorage.setItem('tacnet_entry_pass', roomCode);
 
     // Connect socket
     let serverUrl = '';

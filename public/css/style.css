@@ -141,9 +141,21 @@ html, body {
 }
 .btn-primary:active { transform: translateY(0); }
 
+.lobby-footer {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  text-align: center;
+}
 .lobby-footer p {
   font-size: 0.78rem; color: var(--text-muted); text-align: center;
 }
+.clear-saved-btn {
+  font-size: 0.7rem; color: var(--text-dim);
+  background: none; border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px; cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
+}
+.clear-saved-btn:hover { color: var(--danger); border-color: var(--danger); }
 
 /* ═══════════════ HEADER ═══════════════ */
 #header {
@@ -495,7 +507,7 @@ html, body {
   width: 120px;
   aspect-ratio: 3/4;
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow: visible;
   border: 2px solid var(--accent);
   box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   z-index: 998;
@@ -504,7 +516,8 @@ html, body {
 #local-video {
   width: 100%; height: 100%;
   object-fit: cover;
-  transform: scaleX(-1);
+  border-radius: var(--radius);
+  /* Mirror is now set via JS based on facing mode */
 }
 .local-video-label {
   position: absolute; bottom: 4px; left: 50%;
@@ -514,6 +527,22 @@ html, body {
   background: rgba(0,0,0,0.7);
   color: var(--accent); letter-spacing: 2px;
 }
+.flip-cam-btn {
+  position: absolute;
+  top: -12px;
+  left: -12px;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background var(--transition), color var(--transition);
+  z-index: 999;
+}
+.flip-cam-btn svg { width: 14px; height: 14px; }
+.flip-cam-btn:hover { background: var(--bg-card-hover); color: var(--accent); }
 
 /* ═══════════════ SCROLLBAR ═══════════════ */
 ::-webkit-scrollbar { width: 4px; }
