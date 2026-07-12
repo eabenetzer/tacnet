@@ -68,7 +68,7 @@ window.GeoLocation = (function () {
       },
       {
         enableHighAccuracy: true, // Always use real GPS chip for tactical accuracy
-        maximumAge: boostMode ? 0 : 10000,
+        maximumAge: 0,            // Never return a cached position
         timeout: 10000
       }
     );
