@@ -22,18 +22,21 @@ function generatePairingCode() {
   return code;
 }
 
-// ── Room & User State ──────────────────────────────────────────
-// In the new privacy model, all users are in the same 'server' if they have the entry pass,
-// but they only exchange data with their 'paired' teammates.
-const users = new Map(); // socketId -> userObj
-const pairingToSocket = new Map(); // pairingCode -> socketId
+// ── Persistent Room & User State ───────────────────────────────
+// Users are indexed by persistent deviceId (survives reconnection)
+const users = new Map();              // deviceId -> userObj
+const socketIdToDeviceId = new Map(); // socket.id -> deviceId
+const pairingToDeviceId = new Map();  // pairingCode -> deviceId
 
 // Helper to send to paired peers
-function emitToPaired(socketId, event, data, ioInstance, socketInstance) {
-  const me = users.get(socketId);
+function emitToPaired(deviceId, event, data, socketInstance) {
+  const me = users.get(deviceId);
   if (!me) return;
-  for (const peerId of me.pairedWith) {
-    socketInstance.to(peerId).emit(event, data);
+  for (const peerDeviceId of me.pairedWith) {
+    const peer = users.get(peerDeviceId);
+    if (peer && peer.socketId) {
+      socketInstance.to(peer.socketId).emit(event, data);
+    }
   }
 }
 
@@ -45,68 +48,112 @@ const MARKER_COLORS = [
 
 // ── Socket.IO ──────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  let currentUser = null;
+  let currentDeviceId = null;
 
   // ── Join Server ────────────────────────────────────────────────
-  socket.on('join-room', ({ roomCode, callsign }) => {
+  socket.on('join-room', ({ roomCode, callsign, deviceId }) => {
     roomCode = (roomCode || '').trim();
     if (roomCode !== ENTRY_PASS) {
       socket.emit('auth-error', 'Invalid Entry Pass');
       return;
     }
-    
+
+    if (!deviceId) {
+      socket.emit('auth-error', 'Device identification missing');
+      return;
+    }
+
+    currentDeviceId = deviceId;
+    socketIdToDeviceId.set(socket.id, currentDeviceId);
+
     callsign = (callsign || 'Operator').trim().substring(0, 20);
-    const color = MARKER_COLORS[users.size % MARKER_COLORS.length];
     
-    // Ensure unique pairing code
-    let pairingCode = generatePairingCode();
-    while(pairingToSocket.has(pairingCode)) pairingCode = generatePairingCode();
+    let user = users.get(currentDeviceId);
 
-    currentUser = { 
-      id: socket.id,
-      callsign, 
-      lat: null, lng: null, 
-      color,
-      pairingCode,
-      pairedWith: new Set()
-    };
-    
-    users.set(socket.id, currentUser);
-    pairingToSocket.set(pairingCode, socket.id);
+    if (user) {
+      // Reconnecting existing user: update socket ID and callsign if changed
+      user.socketId = socket.id;
+      user.callsign = callsign;
+    } else {
+      // New user
+      const color = MARKER_COLORS[users.size % MARKER_COLORS.length];
+      let pairingCode = generatePairingCode();
+      while(pairingToDeviceId.has(pairingCode)) pairingCode = generatePairingCode();
 
-    socket.emit('joined', { 
-      callsign, 
-      color, 
-      userId: socket.id,
-      pairingCode 
+      user = {
+        deviceId: currentDeviceId,
+        socketId: socket.id,
+        callsign,
+        lat: null, lng: null,
+        color,
+        pairingCode,
+        pairedWith: new Set()
+      };
+      users.set(currentDeviceId, user);
+      pairingToDeviceId.set(pairingCode, currentDeviceId);
+    }
+
+    socket.emit('joined', {
+      callsign: user.callsign,
+      color: user.color,
+      userId: user.deviceId, // client expects this to map to marker identifiers
+      pairingCode: user.pairingCode
     });
+
+    // Notify any active paired teammates that this user came back online
+    for (const peerDeviceId of user.pairedWith) {
+      const peer = users.get(peerDeviceId);
+      if (peer && peer.socketId) {
+        socket.to(peer.socketId).emit('teammate-added', {
+          id: user.deviceId,
+          callsign: user.callsign,
+          color: user.color,
+          lat: user.lat,
+          lng: user.lng
+        });
+      }
+    }
   });
 
   // ── Add Teammate ─────────────────────────────────────────────
   socket.on('add-teammate', (code) => {
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
     if (!currentUser) return;
+
     const targetCode = (code || '').toUpperCase().trim();
     if (targetCode === currentUser.pairingCode) return;
-    
-    const targetSocketId = pairingToSocket.get(targetCode);
-    if (targetSocketId) {
-      const targetUser = users.get(targetSocketId);
+
+    const targetDeviceId = pairingToDeviceId.get(targetCode);
+    if (targetDeviceId) {
+      const targetUser = users.get(targetDeviceId);
       if (targetUser) {
-        // Mutual pair
-        currentUser.pairedWith.add(targetSocketId);
-        targetUser.pairedWith.add(socket.id);
-        
-        // Notify both
+        // Mutual pair by device ID
+        currentUser.pairedWith.add(targetDeviceId);
+        targetUser.pairedWith.add(currentDeviceId);
+
+        // Notify current user if target is online/registered
         socket.emit('teammate-added', {
-          id: targetSocketId, callsign: targetUser.callsign, color: targetUser.color, lat: targetUser.lat, lng: targetUser.lng
+          id: targetDeviceId,
+          callsign: targetUser.callsign,
+          color: targetUser.color,
+          lat: targetUser.lat,
+          lng: targetUser.lng
         });
-        socket.to(targetSocketId).emit('teammate-added', {
-          id: socket.id, callsign: currentUser.callsign, color: currentUser.color, lat: currentUser.lat, lng: currentUser.lng
-        });
+
+        // Notify target user if they are currently online
+        if (targetUser.socketId) {
+          socket.to(targetUser.socketId).emit('teammate-added', {
+            id: currentDeviceId,
+            callsign: currentUser.callsign,
+            color: currentUser.color,
+            lat: currentUser.lat,
+            lng: currentUser.lng
+          });
+          socket.to(targetUser.socketId).emit('chat-message', { from: 'SYSTEM', text: `${currentUser.callsign} paired with you`, time: Date.now(), color: '#888' });
+        }
         
-        // System chat notification
         socket.emit('chat-message', { from: 'SYSTEM', text: `Paired with ${targetUser.callsign}`, time: Date.now(), color: '#888' });
-        socket.to(targetSocketId).emit('chat-message', { from: 'SYSTEM', text: `${currentUser.callsign} paired with you`, time: Date.now(), color: '#888' });
       }
     } else {
       socket.emit('chat-message', { from: 'SYSTEM', text: `Invalid code: ${targetCode}`, time: Date.now(), color: '#ff5252' });
@@ -115,106 +162,131 @@ io.on('connection', (socket) => {
 
   // ── Location Update ──────────────────────────────────────────
   socket.on('location', ({ lat, lng, heading, speed }) => {
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
     if (!currentUser) return;
+
     currentUser.lat = lat;
     currentUser.lng = lng;
     currentUser.heading = heading;
     currentUser.speed = speed;
-    
-    emitToPaired(socket.id, 'location-update', {
-      id: socket.id,
+
+    emitToPaired(currentDeviceId, 'location-update', {
+      id: currentDeviceId,
       lat, lng, heading, speed,
       callsign: currentUser.callsign,
       color: currentUser.color
-    }, io, socket);
+    }, socket);
   });
 
   // ── Chat ─────────────────────────────────────────────────────
   socket.on('chat-message', ({ text }) => {
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
     if (!currentUser) return;
+
     const msg = {
       from: currentUser.callsign,
       text: text.substring(0, 500),
       time: Date.now(),
       color: currentUser.color
     };
-    // Send to self
     socket.emit('chat-message', msg);
-    // Send to paired
-    emitToPaired(socket.id, 'chat-message', msg, io, socket);
+    emitToPaired(currentDeviceId, 'chat-message', msg, socket);
   });
 
   // ── WebRTC Signaling ─────────────────────────────────────────
-  // Signaling needs to be passed through even if not fully paired yet? 
-  // No, only paired users should do WebRTC.
   socket.on('rtc-offer', ({ to, offer }) => {
-    if(currentUser && currentUser.pairedWith.has(to)) {
-      socket.to(to).emit('rtc-offer', { from: socket.id, offer });
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
+    if (currentUser && currentUser.pairedWith.has(to)) {
+      const targetUser = users.get(to);
+      if (targetUser && targetUser.socketId) {
+        socket.to(targetUser.socketId).emit('rtc-offer', { from: currentDeviceId, offer });
+      }
     }
   });
 
   socket.on('rtc-answer', ({ to, answer }) => {
-    if(currentUser && currentUser.pairedWith.has(to)) {
-      socket.to(to).emit('rtc-answer', { from: socket.id, answer });
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
+    if (currentUser && currentUser.pairedWith.has(to)) {
+      const targetUser = users.get(to);
+      if (targetUser && targetUser.socketId) {
+        socket.to(targetUser.socketId).emit('rtc-answer', { from: currentDeviceId, answer });
+      }
     }
   });
 
   socket.on('rtc-ice', ({ to, candidate }) => {
-    if(currentUser && currentUser.pairedWith.has(to)) {
-      socket.to(to).emit('rtc-ice', { from: socket.id, candidate });
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
+    if (currentUser && currentUser.pairedWith.has(to)) {
+      const targetUser = users.get(to);
+      if (targetUser && targetUser.socketId) {
+        socket.to(targetUser.socketId).emit('rtc-ice', { from: currentDeviceId, candidate });
+      }
     }
   });
 
   // ── PTT State ────────────────────────────────────────────────
   socket.on('ptt-start', () => {
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
     if (!currentUser) return;
-    emitToPaired(socket.id, 'ptt-active', {
-      id: socket.id,
+
+    emitToPaired(currentDeviceId, 'ptt-active', {
+      id: currentDeviceId,
       callsign: currentUser.callsign,
       color: currentUser.color
-    }, io, socket);
+    }, socket);
   });
 
   socket.on('ptt-stop', () => {
-    if (!currentUser) return;
-    emitToPaired(socket.id, 'ptt-inactive', { id: socket.id }, io, socket);
+    if (!currentDeviceId) return;
+    emitToPaired(currentDeviceId, 'ptt-inactive', { id: currentDeviceId }, socket);
   });
 
   // ── Camera State ─────────────────────────────────────────────
   socket.on('camera-on', () => {
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
     if (!currentUser) return;
-    emitToPaired(socket.id, 'camera-on', {
-      id: socket.id,
+
+    emitToPaired(currentDeviceId, 'camera-on', {
+      id: currentDeviceId,
       callsign: currentUser.callsign
-    }, io, socket);
+    }, socket);
   });
 
   socket.on('camera-off', () => {
-    if (!currentUser) return;
-    emitToPaired(socket.id, 'camera-off', { id: socket.id }, io, socket);
+    if (!currentDeviceId) return;
+    emitToPaired(currentDeviceId, 'camera-off', { id: currentDeviceId }, socket);
   });
 
   // ── Disconnect ───────────────────────────────────────────────
   socket.on('disconnect', () => {
+    if (!currentDeviceId) return;
+    const currentUser = users.get(currentDeviceId);
     if (!currentUser) return;
-    
-    // Remove from other people's paired sets
-    for (const peerId of currentUser.pairedWith) {
-      const peer = users.get(peerId);
-      if (peer) {
-        peer.pairedWith.delete(socket.id);
-        io.to(peerId).emit('chat-message', {
+
+    // Clear connection socket mapping, keep pairing and coordinates intact
+    currentUser.socketId = null;
+    socketIdToDeviceId.delete(socket.id);
+
+    // Notify peers that they went offline temporarily
+    for (const peerDeviceId of currentUser.pairedWith) {
+      const peer = users.get(peerDeviceId);
+      if (peer && peer.socketId) {
+        io.to(peer.socketId).emit('chat-message', {
           from: 'SYSTEM',
           text: `${currentUser.callsign} went offline`,
           time: Date.now(),
           color: '#888'
         });
-        io.to(peerId).emit('peer-disconnected', { id: socket.id });
+        io.to(peer.socketId).emit('peer-disconnected', { id: currentDeviceId });
       }
     }
-    
-    pairingToSocket.delete(currentUser.pairingCode);
-    users.delete(socket.id);
   });
 });
 

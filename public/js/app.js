@@ -32,6 +32,13 @@
   if (savedCallsign) callsignInput.value = savedCallsign;
   if (savedPass) roomInput.value = savedPass;
 
+  // Retrieve or generate persistent device identification UUID
+  let myDeviceId = localStorage.getItem('tacnet_device_id');
+  if (!myDeviceId) {
+    myDeviceId = 'dn_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now().toString(36);
+    localStorage.setItem('tacnet_device_id', myDeviceId);
+  }
+
   // Show "clear saved" button if credentials exist
   const clearSavedBtn = document.getElementById('clear-saved-btn');
   if (savedCallsign && clearSavedBtn) {
@@ -40,10 +47,14 @@
       localStorage.removeItem('tacnet_callsign');
       localStorage.removeItem('tacnet_entry_pass');
       localStorage.removeItem('tacnet_server_url');
+      localStorage.removeItem('tacnet_device_id');
       callsignInput.value = '';
       roomInput.value = '4321';
       if (isNative) serverUrlInput.value = '';
       clearSavedBtn.style.display = 'none';
+      // Re-generate fresh device identity so next login gets a new pairing code
+      myDeviceId = 'dn_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now().toString(36);
+      localStorage.setItem('tacnet_device_id', myDeviceId);
     });
   }
 
@@ -146,7 +157,7 @@
     socket = io(serverUrl);
 
     socket.on('connect', () => {
-      socket.emit('join-room', { roomCode, callsign });
+      socket.emit('join-room', { roomCode, callsign, deviceId: myDeviceId });
     });
 
     socket.on('joined', (data) => {

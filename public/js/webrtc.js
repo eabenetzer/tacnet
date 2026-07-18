@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   WebRTC Manager — Peer connections, STUN, ICE, tracks
+   WebRTC Manager — Peer connections, STUN/TURN, ICE, tracks
    ═══════════════════════════════════════════════════════════════ */
 window.WebRTCManager = (function () {
   const ICE_SERVERS = [
@@ -24,29 +24,37 @@ window.WebRTCManager = (function () {
     }
   ];
 
-  const peers = new Map(); // peerId -> RTCPeerConnection
+  const peers = new Map();          // peerId -> RTCPeerConnection
+  const negLocks = new Map();       // peerId -> Promise (negotiation queue)
   let socket = null;
   let localAudioStream = null;
   let localVideoStream = null;
-  let onRemoteTrack = null;   // callback(peerId, track, kind)
-  let onPeerClosed = null;    // callback(peerId)
+  let onRemoteTrack = null;         // callback(peerId, track, kind)
+  let onPeerClosed = null;          // callback(peerId)
 
   function init(sock, callbacks = {}) {
     socket = sock;
     onRemoteTrack = callbacks.onRemoteTrack || (() => {});
-    onPeerClosed = callbacks.onPeerClosed || (() => {});
+    onPeerClosed  = callbacks.onPeerClosed  || (() => {});
 
     socket.on('rtc-offer', async ({ from, offer }) => {
       const pc = getOrCreatePeer(from);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('rtc-answer', { to: from, answer });
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('rtc-answer', { to: from, answer });
+      } catch (e) {
+        console.warn('rtc-offer handling error:', e);
+      }
     });
 
     socket.on('rtc-answer', async ({ from, answer }) => {
       const pc = peers.get(from);
-      if (pc) await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      if (pc) {
+        try { await pc.setRemoteDescription(new RTCSessionDescription(answer)); }
+        catch (e) { console.warn('rtc-answer error:', e); }
+      }
     });
 
     socket.on('rtc-ice', async ({ from, candidate }) => {
@@ -57,9 +65,7 @@ window.WebRTCManager = (function () {
       }
     });
 
-    socket.on('peer-disconnected', ({ id }) => {
-      closePeer(id);
-    });
+    socket.on('peer-disconnected', ({ id }) => closePeer(id));
   }
 
   function getOrCreatePeer(peerId) {
@@ -67,25 +73,29 @@ window.WebRTCManager = (function () {
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peers.set(peerId, pc);
+    negLocks.set(peerId, Promise.resolve());
 
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        socket.emit('rtc-ice', { to: peerId, candidate: e.candidate });
-      }
+      if (e.candidate) socket.emit('rtc-ice', { to: peerId, candidate: e.candidate });
     };
 
     pc.ontrack = (e) => {
-      const track = e.track;
-      onRemoteTrack(peerId, track, track.kind);
+      onRemoteTrack(peerId, e.track, e.track.kind);
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        closePeer(peerId);
+      if (pc.iceConnectionState === 'failed') {
+        // Try ICE restart
+        negotiatePeer(peerId, true);
+      }
+      if (pc.iceConnectionState === 'disconnected') {
+        setTimeout(() => {
+          if (pc.iceConnectionState === 'disconnected') closePeer(peerId);
+        }, 5000);
       }
     };
 
-    // Add any existing local streams
+    // Add any existing local streams to new peer
     if (localAudioStream) {
       localAudioStream.getTracks().forEach(t => pc.addTrack(t, localAudioStream));
     }
@@ -96,11 +106,28 @@ window.WebRTCManager = (function () {
     return pc;
   }
 
+  // ── Serialised negotiation per peer ───────────────────────
+  // Queues offers so audio and video never collide mid-handshake
+  function negotiatePeer(peerId, iceRestart = false) {
+    const prev = negLocks.get(peerId) || Promise.resolve();
+    const next = prev.then(async () => {
+      const pc = peers.get(peerId);
+      if (!pc) return;
+      try {
+        const offer = await pc.createOffer(iceRestart ? { iceRestart: true } : {});
+        await pc.setLocalDescription(offer);
+        socket.emit('rtc-offer', { to: peerId, offer });
+      } catch (e) {
+        console.warn('negotiatePeer error:', e);
+      }
+    });
+    negLocks.set(peerId, next);
+    return next;
+  }
+
   async function connectToPeer(peerId) {
-    const pc = getOrCreatePeer(peerId);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit('rtc-offer', { to: peerId, offer });
+    getOrCreatePeer(peerId);
+    await negotiatePeer(peerId);
   }
 
   function closePeer(peerId) {
@@ -108,6 +135,7 @@ window.WebRTCManager = (function () {
     if (pc) {
       pc.close();
       peers.delete(peerId);
+      negLocks.delete(peerId);
       onPeerClosed(peerId);
     }
   }
@@ -120,24 +148,20 @@ window.WebRTCManager = (function () {
   async function startAudio() {
     try {
       localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Add audio track to all existing peers
+
       for (const [peerId, pc] of peers) {
-        localAudioStream.getTracks().forEach(t => {
-          // check if already has sender for this track kind
-          const senders = pc.getSenders();
-          const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
-          if (!audioSender) {
-            pc.addTrack(t, localAudioStream);
-          } else {
-            audioSender.replaceTrack(t);
-          }
-        });
-        // Renegotiate
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('rtc-offer', { to: peerId, offer });
+        const senders = pc.getSenders();
+        const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+        if (!audioSender) {
+          localAudioStream.getTracks().forEach(t => pc.addTrack(t, localAudioStream));
+        } else {
+          await audioSender.replaceTrack(localAudioStream.getTracks()[0]);
+        }
+        // Queue renegotiation — won't overlap with video
+        negotiatePeer(peerId);
       }
-      // Mute by default (PTT controls this)
+
+      // Mute by default (PTT controls unmute)
       localAudioStream.getTracks().forEach(t => { t.enabled = false; });
       return localAudioStream;
     } catch (e) {
@@ -161,47 +185,49 @@ window.WebRTCManager = (function () {
 
   // ── Video (Camera) ───────────────────────────────────────
   async function startVideo(facingMode = 'environment') {
+    // Stop any existing stream first
+    if (localVideoStream) {
+      localVideoStream.getTracks().forEach(t => t.stop());
+      localVideoStream = null;
+    }
+
+    // Try with facing constraint first, fall back to basic video
     try {
       localVideoStream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: facingMode,
-          width: { ideal: 320 }, 
-          height: { ideal: 240 },
-          frameRate: { ideal: 15, max: 15 }
-        }
+        video: { facingMode: { ideal: facingMode } }
       });
-      // Add video track to all existing peers
-      for (const [peerId, pc] of peers) {
-        localVideoStream.getTracks().forEach(t => {
-          const senders = pc.getSenders();
-          const videoSender = senders.find(s => s.track && s.track.kind === 'video');
-          if (!videoSender) {
-            pc.addTrack(t, localVideoStream);
-          } else {
-            videoSender.replaceTrack(t);
-          }
-        });
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('rtc-offer', { to: peerId, offer });
+    } catch (e1) {
+      console.warn('Facing constraint failed, trying basic video:', e1);
+      try {
+        localVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } catch (e2) {
+        console.error('Camera access denied:', e2);
+        return null;
       }
-      return localVideoStream;
-    } catch (e) {
-      console.error('Camera access denied:', e);
-      return null;
     }
+
+    for (const [peerId, pc] of peers) {
+      const senders = pc.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      if (!videoSender) {
+        localVideoStream.getTracks().forEach(t => pc.addTrack(t, localVideoStream));
+        // Queue renegotiation — won't overlap with audio
+        negotiatePeer(peerId);
+      } else {
+        // replaceTrack does NOT require renegotiation
+        await videoSender.replaceTrack(localVideoStream.getTracks()[0]);
+      }
+    }
+
+    return localVideoStream;
   }
 
   function stopVideo() {
     if (localVideoStream) {
       localVideoStream.getTracks().forEach(t => t.stop());
-      // Remove video senders from all peers
       for (const [, pc] of peers) {
-        const senders = pc.getSenders();
-        senders.forEach(s => {
-          if (s.track && s.track.kind === 'video') {
-            pc.removeTrack(s);
-          }
+        pc.getSenders().forEach(s => {
+          if (s.track && s.track.kind === 'video') pc.removeTrack(s);
         });
       }
       localVideoStream = null;
